@@ -1,0 +1,76 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(lme4)
+library(lmerTest)
+library(performance)
+library(see)
+library(ggplot2)
+library(lmtest)
+library(robustlmm)
+
+d1 <- read.csv('Scale_D1_Final.csv')
+d1$X <- NULL
+```
+
+```{r}
+# Dataset 1 only
+
+d1$Explanation.Type <- as.factor(d1$Explanation.Type)
+d1$QuestionID <- as.factor(d1$Question.ID)
+d1$Participant <- as.factor(d1$Participant)
+
+model_d1_alt <- lmer(Total.Score ~ Explanation.Type +
+       (1 | Participant) + 
+      (1 | QuestionID),
+     data = d1)
+
+
+summary(model_d1_alt)
+confint(model_d1_alt)
+icc(model_d1_alt, by_group = TRUE)
+```
+
+
+
+Check Normality of residuals
+```{r}
+library(lattice)
+qqmath(model_d1_alt)
+
+#Add formal test
+shapiro.test(resid(model_d1_alt)) #Shapiro Wilkes is insignificant so this is good!
+```
+Look at Homogeneity of Variance
+```{r}
+plot(fitted(model_d1_alt), resid(model_d1_alt))
+abline(h = 0, lty = 2)
+
+library(car)
+leveneTest(residuals(model_d1_alt) ~ d1$Explanation.Type)
+```
+Test for Normality of Random Effects Participant
+```{r}
+re <- ranef(model_d1_alt)$Participant[, 1]
+qqnorm(re)
+qqline(re)
+shapiro.test(re)
+
+library(lattice)
+dotplot(ranef(model_d1_alt, condVar = TRUE))
+```
+Test for Normality of Random Effects Question ID
+```{r}
+re <- ranef(model_d1_alt)$QuestionID[, 1]
+qqnorm(re)
+qqline(re)
+shapiro.test(re)
+
+library(lattice)
+dotplot(ranef(model_d1_alt, condVar = TRUE))
+```
+
+

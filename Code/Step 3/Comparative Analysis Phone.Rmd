@@ -1,0 +1,224 @@
+---
+title: "Comparative Analysis Phone"
+output: html_document
+---
+
+```{r}
+library(lme4)
+library(emmeans)
+library(performance)
+```
+
+
+```{r}
+d <- read.csv('comparative_long.csv')
+
+d$participant <- factor(d$participant)
+d$dataset     <- factor(d$dataset)
+d$item        <- factor(d$item)
+```
+
+Let's just do the Telco analysis first
+```{r}
+d_telco <- subset(d, dataset == "telco")
+
+ctrl <- glmerControl(optimizer = "bobyqa")
+
+# Telco: full model (just participant because of singularity)
+m_telco_full <- glmer(choice ~ 1 + (1 | participant),
+                      data = d_telco, family = binomial, control = ctrl)
+
+# Singularity check (TRUE = singular)
+isSingular(m_telco_full)
+
+# Variance components (item variance near 0 = cause of singularity)
+VarCorr(m_telco_full)
+
+# Fixed effects
+summary(m_telco_full)
+
+#ICC of models
+icc(m_telco_full)
+
+#Confidence Intervals
+confint(m_telco_full)
+```
+
+```{r}
+d_med   <- subset(d, dataset == "medical")
+
+ctrl <- glmerControl(optimizer = "bobyqa")
+
+# Medical: full model (participant + item)
+m_med_full <- glmer(choice ~ 1 + (1 | participant) + (1 | item),
+                    data = d_med, family = binomial, control = ctrl)
+
+# Singularity check (TRUE = singular)
+isSingular(m_med_full)
+
+# Variance components (item variance near 0 = cause of singularity)
+VarCorr(m_med_full)
+
+# Fixed effects
+summary(m_med_full)
+
+#ICC of models
+icc(m_med_full, by_group = TRUE)
+
+#Confidence Intervals
+confint(m_med_full)
+```
+```{r}
+#Get back-transformed rations
+cc <- confint(m_telco_full, parm = "beta_", method = "Wald") # Wald method is fastest
+ctab <- cbind(Estimate = fixef(m_telco_full), cc)
+
+# 3. Exponentiate to get Odds Ratios and 95% CIs
+exp_table <- exp(ctab)
+print(exp_table)
+```
+
+```{r}
+#Get back-transformed rations
+cc <- confint(m_med_full, parm = "beta_", method = "Wald") # Wald method is fastest
+ctab <- cbind(Estimate = fixef(m_med_full), cc)
+
+# 3. Exponentiate to get Odds Ratios and 95% CIs
+exp_table <- exp(ctab)
+print(exp_table)
+```
+
+
+```{r}
+library(lme4)
+
+# --- Helper: back-transform a glmer intercept-only (or +item) model ---
+report_intercept <- function(model, ci_method = c("wald", "profile")) {
+  ci_method <- match.arg(ci_method)
+
+  est <- fixef(model)[["(Intercept)"]]
+  se  <- sqrt(vcov(model)[1, 1])
+
+  if (ci_method == "wald") {
+    ci_logit <- est + c(-1.96, 1.96) * se
+  } else {
+    ci_logit <- confint(model, method = "profile", parm = "(Intercept)")
+  }
+
+  data.frame(
+    estimate   = est,
+    se         = se,
+    z          = est / se,
+    p          = 2 * pnorm(-abs(est / se)),
+    OR         = exp(est),
+    OR_lo      = exp(ci_logit[1]),
+    OR_hi      = exp(ci_logit[2]),
+    prob       = plogis(est),
+    prob_lo    = plogis(ci_logit[1]),
+    prob_hi    = plogis(ci_logit[2])
+  )
+}
+
+# --- Fit the two models as specified (telco: participant only; medical: + prototype) ---
+ctrl <- glmerControl(optimizer = "bobyqa")
+
+m_telco <- glmer(choice ~ 1 + (1 | participant),
+                 data = subset(d, dataset == "telco"),
+                 family = binomial, control = ctrl)
+
+m_med <- glmer(choice ~ 1 + (1 | participant) + (1 | item),
+              data = subset(d, dataset == "medical"),
+              family = binomial, control = ctrl)
+
+# --- Reportable estimates (Wald CI, matching your table) ---
+telco_out <- report_intercept(m_telco, "wald")
+med_out   <- report_intercept(m_med, "wald")
+
+round(rbind(telco = telco_out, medical = med_out), 3)
+```
+
+Let's check assumptions
+```{r}
+library(lme4)
+library(DHARMa)
+library(influence.ME)
+
+res_telco <- simulateResiduals(m_telco, n = 1000, seed = 123)
+res_med   <- simulateResiduals(m_med,   n = 1000, seed = 123)
+
+plot(res_telco)     # QQ plot plus residual-vs-predicted
+
+testUniformity(res_telco)           # KS test: overall distribution
+testOutliers(res_telco)
+testDispersion(res_telco)           # reported for completeness; uninformative for Bernoulli
+```
+Repeat for Med
+```{r}
+plot(res_med) 
+
+testUniformity(res_med)           # KS test: overall distribution
+testOutliers(res_med)
+testDispersion(res_med)           # reported for completeness; uninformative for Bernoulli
+```
+```{r}
+res_telco_p <- recalculateResiduals(res_telco, group = d_telco$participant)
+testUniformity(res_telco_p)
+plot(res_telco_p)
+
+res_med_p <- recalculateResiduals(res_med, group = d_med$participant)
+testUniformity(res_med_p)
+plot(res_med_p)
+```
+Normality of random intercepts
+```{r}
+re_p <- ranef(m_telco)$participant[, 1]
+qqnorm(re_p); qqline(re_p)
+shapiro.test(re_p)
+
+re_p_med <- ranef(m_med)$participant[, 1]
+re_i_med <- ranef(m_med)$item[, 1]
+qqnorm(re_p_med); qqline(re_p_med)
+shapiro.test(re_p_med)
+# items: only 10 levels, so interpret visually and cautiously
+```
+
+```{r}
+loo <- sapply(unique(d_med$participant), function(p) {
+  m <- update(m_med, data = subset(d_med, participant != p))
+  fixef(m)[1]
+})
+range(loo)   # should stay clearly above 0
+```
+
+```{r}
+loo <- sapply(unique(d_telco$participant), function(p) {
+  m <- update(m_telco, data = subset(d_telco, participant != p))
+  fixef(m)[1]
+})
+range(loo)   # should stay clearly above 0
+```
+
+```{r}
+isSingular(m_telco); isSingular(m_med)
+m_med@optinfo$conv$lme4$messages     # NULL = no convergence warnings
+
+# Laplace approximation can be biased with few trials per cluster (here 5).
+# Compare with adaptive Gauss-Hermite quadrature (single random effect only):
+m_telco_agq <- update(m_telco, nAGQ = 10)
+cbind(laplace = fixef(m_telco), agq = fixef(m_telco_agq))
+```
+```{r}
+library(glmmTMB)
+m_med_tmb <- glmmTMB(choice ~ 1 + (1 | participant) + (1 | item),
+                     data = d_med, family = binomial)
+summary(m_med_tmb)
+```
+```{r}
+tab <- table(d_telco$participant, d_telco$choice)
+table(rowSums(tab[, "1", drop = FALSE]))   # distribution of co-optimised picks out of 5
+# repeat for d_med
+
+tab <- table(d_med$participant, d_med$choice)
+table(rowSums(tab[, "1", drop = FALSE]))   # distribution of co-optimised picks out of 5
+```
+
